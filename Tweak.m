@@ -1,58 +1,34 @@
-#pragma clang diagnostic push
-#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-#pragma clang diagnostic ignored "-Wunused-variable"
-
 #import <UIKit/UIKit.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
 
-// MARK: - 1. CẤU HÌNH & TRẠNG THÁI
-static BOOL isMasterLoopRunning     = NO;
-static BOOL isFoodEnabled           = YES;
-static BOOL isDeliveryEnabled       = YES;
-static BOOL isRideEnabled           = YES;
-static BOOL isSoundHapticEnabled    = YES;
-
-static NSUInteger totalScannedCount = 0;
-static NSUInteger newOrdersFound    = 0;
+// MARK: - 1. BIẾN TRẠNG THÁI
+static BOOL isMasterLoopRunning  = NO;
+static BOOL isFoodEnabled        = YES;
+static BOOL isDeliveryEnabled    = YES;
+static BOOL isRideEnabled        = YES;
 
 static dispatch_queue_t chainedQueue = nil;
 
 static dispatch_queue_t getChainedQueue(void) {
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        chainedQueue = dispatch_queue_create("com.driver.chained.queue", DISPATCH_QUEUE_SERIAL);
+        chainedQueue = dispatch_queue_create("com.driver.native.queue", DISPATCH_QUEUE_SERIAL);
     });
     return chainedQueue;
 }
 
-// MARK: - 2. ÂM THANH & RUNG AN TOÀN
-static void triggerOrderAlert(void) {
-    if (!isSoundHapticEnabled) return;
-    dispatch_async(dispatch_get_main_queue(), ^{
-        AudioServicesPlaySystemSound(1007);
-        UIImpactFeedbackGenerator *feedback = [[UIImpactFeedbackGenerator alloc] initWithStyle:UIImpactFeedbackStyleHeavy];
-        [feedback prepare];
-        [feedback impactOccurred];
-    });
-}
-
-// MARK: - 3. CÁC HÀM QUÉT DỮ LIỆU ĐƠN
+// MARK: - 2. CÁC HÀM QUÉT DỮ LIỆU ĐƠN HÀNG
 static void scanFoodOrders(void (^done)(void)) {
     @autoreleasepool {
-        totalScannedCount++;
         Class foodClass = objc_getClass("FoodOrderManager");
         if (foodClass) {
             id mgr = ((id (*)(id, SEL))objc_msgSend)(foodClass, NSSelectorFromString(@"sharedInstance"));
             SEL scanSel = NSSelectorFromString(@"fetchAvailableFoodOrders");
             if ([mgr respondsToSelector:scanSel]) {
-                id res = ((id (*)(id, SEL))objc_msgSend)(mgr, scanSel);
-                if (res) {
-                    newOrdersFound++;
-                    triggerOrderAlert();
-                }
+                ((void (*)(id, SEL))objc_msgSend)(mgr, scanSel);
             }
         }
         if (done) done();
@@ -61,7 +37,6 @@ static void scanFoodOrders(void (^done)(void)) {
 
 static void scanDeliveryOrders(void (^done)(void)) {
     @autoreleasepool {
-        totalScannedCount++;
         Class delClass = objc_getClass("ExpressOrderManager");
         if (delClass) {
             id mgr = ((id (*)(id, SEL))objc_msgSend)(delClass, NSSelectorFromString(@"sharedInstance"));
@@ -76,7 +51,6 @@ static void scanDeliveryOrders(void (^done)(void)) {
 
 static void scanRideOrders(void (^done)(void)) {
     @autoreleasepool {
-        totalScannedCount++;
         Class rideClass = objc_getClass("RideOrderManager");
         if (rideClass) {
             id mgr = ((id (*)(id, SEL))objc_msgSend)(rideClass, NSSelectorFromString(@"sharedInstance"));
@@ -120,32 +94,33 @@ static void startChainedEngine(void) {
     });
 }
 
-// MARK: - 4. GIAO DIỆN NÚT NỔI SIÊU NHẸ (KHÔNG DÙNG UIWINDOW RIÊNG ĐỂ TRÁNH CRASH)
-@interface FloatingButtonManager : NSObject
+// MARK: - 3. QUẢN LÝ GIAO DIỆN NÚT NỔI
+@interface DriverFloatingMenu : NSObject
 @property (nonatomic, strong) UIButton *btn;
 + (instancetype)shared;
-- (void)attachToKeyWindow;
+- (void)attachButton;
 @end
 
-@implementation FloatingButtonManager
+@implementation DriverFloatingMenu
 
 + (instancetype)shared {
-    static FloatingButtonManager *inst;
+    static DriverFloatingMenu *inst;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        inst = [[FloatingButtonManager alloc] init];
+        inst = [[DriverFloatingMenu alloc] init];
     });
     return inst;
 }
 
-- (void)attachToKeyWindow {
+- (void)attachButton {
     UIWindow *window = [UIApplication sharedApplication].keyWindow;
     if (!window) {
-        // Fallback tìm window trên iOS 13+
-        for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
-            if ([scene isKindOfClass:[UIWindowScene class]]) {
-                for (UIWindow *w in scene.windows) {
-                    if (w.isKeyWindow) { window = w; break; }
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if ([scene isKindOfClass:[UIWindowScene class]]) {
+                    for (UIWindow *w in scene.windows) {
+                        if (w.isKeyWindow) { window = w; break; }
+                    }
                 }
             }
         }
@@ -210,19 +185,28 @@ static void startChainedEngine(void) {
 
 @end
 
-// MARK: - 5. GẮN NÚT VÀO MÀN HÌNH SAU KHI APP MỞ XONG
-%hook UIViewController
+// MARK: - 4. METHOD SWIZZLING THUẦN (KHÔNG CẦN CYDIASUBSTRATE)
+static void (*orig_viewDidAppear)(id, SEL, BOOL);
 
-- (void)viewDidAppear:(BOOL)animated {
-    %orig;
+static void custom_viewDidAppear(id self, SEL _cmd, BOOL animated) {
+    orig_viewDidAppear(self, _cmd, animated);
+
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-            [[FloatingButtonManager shared] attachToKeyWindow];
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            [[DriverFloatingMenu shared] attachButton];
         });
     });
 }
 
-%end
-
-#pragma clang diagnostic pop
+// Khởi tạo Swizzling an toàn khi thư viện được load
+__attribute__((constructor)) static void initNativeLibrary(void) {
+    Class vcClass = [UIViewController class];
+    SEL sel = @selector(viewDidAppear:);
+    Method originalMethod = class_getInstanceMethod(vcClass, sel);
+    
+    if (originalMethod) {
+        orig_viewDidAppear = (void (*)(id, SEL, BOOL))method_getImplementation(originalMethod);
+        method_setImplementation(originalMethod, (IMP)custom_viewDidAppear);
+    }
+}
