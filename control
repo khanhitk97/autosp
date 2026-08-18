@@ -1,0 +1,9 @@
+Package: com.driver.assistantpro
+Name: DriverAssistantPro
+Depends: mobilesubstrate
+Version: 1.0.0
+Architecture: iphoneos-arm
+Description: Bo cong cu ho tro san don, quet don lien tuc va cham nhanh nhan don
+Maintainer: Developer
+Author: Developer
+Section: Tweaks
