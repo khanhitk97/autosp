@@ -1,8 +1,13 @@
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Warc-performSelector-leaks"
+#pragma clang diagnostic ignored "-Wunused-variable"
+
 #import <UIKit/UIKit.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 #import <mach-o/dyld.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <dlfcn.h>
 #import <substrate.h>
 
@@ -89,30 +94,24 @@ static void triggerOrderAlert(void) {
 static void executeAcceptOrder(NSString *orderId, double price, double distance) {
     if (!orderId || orderId.length == 0) return;
 
-    // Human delay an toàn ngẫu nhiên (80ms - 180ms)
+    // Human delay ngẫu nhiên (80ms - 180ms)
     uint32_t delayMs = 80 + arc4random_uniform(100);
 
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayMs * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
-        NSLog(@"[DriverTweak] ⚡ Auto-Accept ID: %@ | Giá: %.0f đ | Cự ly: %.1f km", orderId, price, distance);
-
         Class orderMgrClass = objc_getClass("FoodOrderManager");
         if (orderMgrClass) {
-            id mgr = [orderMgrClass performSelector:NSSelectorFromString(@"sharedInstance")];
+            id mgr = ((id (*)(id, SEL))objc_msgSend)(orderMgrClass, NSSelectorFromString(@"sharedInstance"));
             SEL acceptSelector = NSSelectorFromString(@"acceptOrderById:completion:");
+            
             if ([mgr respondsToSelector:acceptSelector]) {
-                NSMethodSignature *sig = [mgr methodSignatureForSelector:acceptSelector];
-                NSInvocation *inv = [NSInvocation invocationWithMethodSignature:sig];
-                [inv setTarget:mgr];
-                [inv setSelector:acceptSelector];
-                [inv setArgument:&orderId atIndex:2];
-                
                 void (^callback)(BOOL success, id error) = ^(BOOL success, id error) {
                     if (success) {
                         NSLog(@"[DriverTweak] ✅ Nhận đơn thành công!");
                     }
                 };
-                [inv setArgument:&callback atIndex:3];
-                [inv invoke];
+                
+                // Dùng objc_msgSend trực tiếp thay cho NSInvocation để tránh lỗi cast pointer C++
+                ((void (*)(id, SEL, NSString *, id))objc_msgSend)(mgr, acceptSelector, orderId, callback);
             }
         }
     });
@@ -137,12 +136,10 @@ static void scanFoodOrders(void (^done)(void)) {
         totalScannedCount++;
         Class foodClass = objc_getClass("FoodOrderManager");
         if (foodClass) {
-            id mgr = [foodClass performSelector:NSSelectorFromString(@"sharedInstance")];
-            if ([mgr respondsToSelector:NSSelectorFromString(@"fetchAvailableFoodOrders")]) {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                id result = [mgr performSelector:NSSelectorFromString(@"fetchAvailableFoodOrders")];
-                #pragma clang diagnostic pop
+            id mgr = ((id (*)(id, SEL))objc_msgSend)(foodClass, NSSelectorFromString(@"sharedInstance"));
+            SEL scanSel = NSSelectorFromString(@"fetchAvailableFoodOrders");
+            if ([mgr respondsToSelector:scanSel]) {
+                id result = ((id (*)(id, SEL))objc_msgSend)(mgr, scanSel);
                 if (result) {
                     newOrdersFound++;
                     triggerOrderAlert();
@@ -158,12 +155,10 @@ static void scanDeliveryOrders(void (^done)(void)) {
         totalScannedCount++;
         Class delClass = objc_getClass("ExpressOrderManager");
         if (delClass) {
-            id mgr = [delClass performSelector:NSSelectorFromString(@"sharedInstance")];
-            if ([mgr respondsToSelector:NSSelectorFromString(@"refreshOrderList")]) {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [mgr performSelector:NSSelectorFromString(@"refreshOrderList")];
-                #pragma clang diagnostic pop
+            id mgr = ((id (*)(id, SEL))objc_msgSend)(delClass, NSSelectorFromString(@"sharedInstance"));
+            SEL scanSel = NSSelectorFromString(@"refreshOrderList");
+            if ([mgr respondsToSelector:scanSel]) {
+                ((void (*)(id, SEL))objc_msgSend)(mgr, scanSel);
             }
         }
         if (done) done();
@@ -175,12 +170,10 @@ static void scanRideOrders(void (^done)(void)) {
         totalScannedCount++;
         Class rideClass = objc_getClass("RideOrderManager");
         if (rideClass) {
-            id mgr = [rideClass performSelector:NSSelectorFromString(@"sharedInstance")];
-            if ([mgr respondsToSelector:NSSelectorFromString(@"syncNearbyDriverAndOrders")]) {
-                #pragma clang diagnostic push
-                #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-                [mgr performSelector:NSSelectorFromString(@"syncNearbyDriverAndOrders")];
-                #pragma clang diagnostic pop
+            id mgr = ((id (*)(id, SEL))objc_msgSend)(rideClass, NSSelectorFromString(@"sharedInstance"));
+            SEL scanSel = NSSelectorFromString(@"syncNearbyDriverAndOrders");
+            if ([mgr respondsToSelector:scanSel]) {
+                ((void (*)(id, SEL))objc_msgSend)(mgr, scanSel);
             }
         }
         if (done) done();
@@ -253,16 +246,11 @@ static void startChainedEngine(void) {
 
 %new
 - (void)handleInstantTapAccept:(UITapGestureRecognizer *)gesture {
-    NSLog(@"[DriverTweak] ⚡ Đã chạm nhận đơn trực tiếp!");
-    
     NSArray *methods = @[@"onSwipeCompleted", @"finishSwipe", @"actionTriggered", @"didFinishSliding", @"acceptOrderAction:"];
     for (NSString *selName in methods) {
         SEL sel = NSSelectorFromString(selName);
         if ([self respondsToSelector:sel]) {
-            #pragma clang diagnostic push
-            #pragma clang diagnostic ignored "-Warc-performSelector-leaks"
-            [self performSelector:sel withObject:self];
-            #pragma clang diagnostic pop
+            ((void (*)(id, SEL, id))objc_msgSend)(self, sel, self);
             return;
         }
     }
@@ -555,3 +543,5 @@ __attribute__((constructor)) static void initTweak(void) {
         }
     });
 }
+
+#pragma clang diagnostic pop
