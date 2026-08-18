@@ -1,0 +1,14 @@
+# Bỏ qua thư mục build tạm của Theos
+.theos/
+obj/
+_output/
+
+# Bỏ qua các file gói cài đặt đã biên dịch
+packages/
+*.deb
+*.dylib
+*.ipa
+
+# Bỏ qua file rác của hệ điều hành
+.DS_Store
+Thumbs.db
