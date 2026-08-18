@@ -5,11 +5,8 @@
 #import <UIKit/UIKit.h>
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
-#import <mach-o/dyld.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
-#import <dlfcn.h>
-#import <substrate.h>
 
 // MARK: - 1. BIẾN CẤU HÌNH & TRẠNG THÁI
 static BOOL isMasterLoopRunning     = NO;
@@ -19,12 +16,10 @@ static BOOL isRideEnabled           = YES;
 static BOOL isSoundHapticEnabled    = YES;
 static BOOL useCustomSound          = YES;
 
-// Cấu hình Auto-Accept & Bộ lọc
 static BOOL isAutoAcceptEnabled     = YES;
-static double minOrderPriceSetting  = 40000.0;  // Giá tối thiểu (VNĐ)
-static double maxPickupDistSetting  = 2.5;      // Khoảng cách tối đa (km)
+static double minOrderPriceSetting  = 40000.0;
+static double maxPickupDistSetting  = 2.5;
 
-// Thống kê thời gian thực
 static NSUInteger totalScannedCount = 0;
 static NSUInteger newOrdersFound    = 0;
 
@@ -47,11 +42,10 @@ static dispatch_queue_t getChainedQueue(void) {
 - (void)toggleMenuVisibility;
 @end
 
-// MARK: - 2. KHỞI TẠO ÂM THANH & RUNG PHẢN HỒI
+// MARK: - 2. ÂM THANH & RUNG
 static void setupCustomAudioPlayer(void) {
     NSArray *paths = NSSearchPathForDirectoriesInDomains(NSDocumentDirectory, NSUserDomainMask, YES);
-    NSString *documentsDirectory = [paths firstObject];
-    NSString *soundFilePath = [documentsDirectory stringByAppendingPathComponent:@"custom_alert.mp3"];
+    NSString *soundFilePath = [[paths firstObject] stringByAppendingPathComponent:@"custom_alert.mp3"];
     
     if (![[NSFileManager defaultManager] fileExistsAtPath:soundFilePath]) {
         soundFilePath = [[NSBundle mainBundle] pathForResource:@"custom_alert" ofType:@"mp3"];
@@ -90,13 +84,11 @@ static void triggerOrderAlert(void) {
     });
 }
 
-// MARK: - 3. THỰC THI AUTO-ACCEPT KÈM BỘ LỌC
+// MARK: - 3. THỰC THI AUTO-ACCEPT
 static void executeAcceptOrder(NSString *orderId, double price, double distance) {
     if (!orderId || orderId.length == 0) return;
 
-    // Human delay ngẫu nhiên (80ms - 180ms)
     uint32_t delayMs = 80 + arc4random_uniform(100);
-
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delayMs * NSEC_PER_MSEC)), dispatch_get_main_queue(), ^{
         Class orderMgrClass = objc_getClass("FoodOrderManager");
         if (orderMgrClass) {
@@ -105,32 +97,15 @@ static void executeAcceptOrder(NSString *orderId, double price, double distance)
             
             if ([mgr respondsToSelector:acceptSelector]) {
                 void (^callback)(BOOL success, id error) = ^(BOOL success, id error) {
-                    if (success) {
-                        NSLog(@"[DriverTweak] ✅ Nhận đơn thành công!");
-                    }
+                    if (success) NSLog(@"[DriverTweak] ✅ Nhận đơn thành công!");
                 };
-                
-                // Dùng objc_msgSend trực tiếp thay cho NSInvocation để tránh lỗi cast pointer C++
                 ((void (*)(id, SEL, NSString *, id))objc_msgSend)(mgr, acceptSelector, orderId, callback);
             }
         }
     });
 }
 
-static void filterAndProcessIncomingOrder(NSDictionary *orderData) {
-    if (!isAutoAcceptEnabled || !orderData) return;
-
-    NSString *orderId = orderData[@"order_id"] ?: orderData[@"id"];
-    double orderPrice = [orderData[@"driver_fee"] doubleValue] ?: [orderData[@"price"] doubleValue];
-    double distanceKm = [orderData[@"pickup_distance_km"] doubleValue] ?: [orderData[@"distance"] doubleValue];
-
-    if (orderPrice < minOrderPriceSetting) return;
-    if (distanceKm > maxPickupDistSetting && distanceKm > 0) return;
-
-    executeAcceptOrder(orderId, orderPrice, distanceKm);
-}
-
-// MARK: - 4. CÁC HÀM QUÉT DỮ LIỆU ĐƠN HÀNG (CHAINED MODULES)
+// MARK: - 4. QUÉT NỐI TIẾP
 static void scanFoodOrders(void (^done)(void)) {
     @autoreleasepool {
         totalScannedCount++;
@@ -215,7 +190,7 @@ static void startChainedEngine(void) {
     });
 }
 
-// MARK: - 5. HOOK CHUYỂN "VUỐT ĐỂ NHẬN ĐƠN" THÀNH "NHẤN 1 CHẠM"
+// MARK: - 5. HOOK CHUYỂN "VUỐT" THÀNH "NHẤN"
 %hook UIView
 
 - (void)didMoveToWindow {
@@ -264,7 +239,7 @@ static void startChainedEngine(void) {
 
 %end
 
-// MARK: - 6. GIAO DIỆN NÚT NỔI & MENU ĐIỀU KHIỂN
+// MARK: - 6. GIAO DIỆN NÚT NỔI
 @implementation MasterControlMenu
 
 + (instancetype)shared {
@@ -274,6 +249,17 @@ static void startChainedEngine(void) {
         inst = [[MasterControlMenu alloc] initWithFrame:[UIScreen mainScreen].bounds];
         inst.windowLevel = UIWindowLevelAlert + 100;
         inst.backgroundColor = [UIColor clearColor];
+        
+        // Hỗ trợ iOS 13+ SceneDelegate
+        if (@available(iOS 13.0, *)) {
+            for (UIWindowScene *scene in [UIApplication sharedApplication].connectedScenes) {
+                if (scene.activationState == UISceneActivationStateForegroundActive && [scene isKindOfClass:[UIWindowScene class]]) {
+                    inst.windowScene = scene;
+                    break;
+                }
+            }
+        }
+        
         inst.hidden = NO;
         [inst setupUI];
     });
@@ -359,58 +345,6 @@ static void startChainedEngine(void) {
     self.btn.hidden = !self.btn.hidden;
 }
 
-- (void)openMinPricePicker:(UIViewController *)rootVC {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"💰 CHỌN GIÁ CƯỚC TỐI THIỂU"
-                                                                   message:@"Chỉ tự nhận đơn có giá lớn hơn hoặc bằng:"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSArray *pricePresets = @[
-        @{@"label": @"Tất cả giá (Không lọc)", @"val": @(0.0)},
-        @{@"label": @"Từ 25.000 đ", @"val": @(25000.0)},
-        @{@"label": @"Từ 35.000 đ", @"val": @(35000.0)},
-        @{@"label": @"Từ 50.000 đ", @"val": @(50000.0)},
-        @{@"label": @"Từ 80.000 đ", @"val": @(80000.0)}
-    ];
-
-    for (NSDictionary *item in pricePresets) {
-        double val = [item[@"val"] doubleValue];
-        NSString *checkMark = (minOrderPriceSetting == val) ? @"✅ " : @"⚪ ";
-        [alert addAction:[UIAlertAction actionWithTitle:[checkMark stringByAppendingString:item[@"label"]] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            minOrderPriceSetting = val;
-            [[NSUserDefaults standardUserDefaults] setDouble:val forKey:@"Saved_MinPrice"];
-        }]];
-    }
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-    [rootVC presentViewController:alert animated:YES completion:nil];
-}
-
-- (void)openMaxDistancePicker:(UIViewController *)rootVC {
-    UIAlertController *alert = [UIAlertController alertControllerWithTitle:@"📍 CHỌN BÁN KÍNH ĐÓN TỐI ĐA"
-                                                                   message:@"Chỉ nhận đơn có khoảng cách đón gần hơn:"
-                                                            preferredStyle:UIAlertControllerStyleActionSheet];
-
-    NSArray *distPresets = @[
-        @{@"label": @"Dưới 1.0 km", @"val": @(1.0)},
-        @{@"label": @"Dưới 1.5 km", @"val": @(1.5)},
-        @{@"label": @"Dưới 2.5 km (Chuẩn)", @"val": @(2.5)},
-        @{@"label": @"Dưới 4.0 km", @"val": @(4.0)},
-        @{@"label": @"Không giới hạn", @"val": @(99.0)}
-    ];
-
-    for (NSDictionary *item in distPresets) {
-        double val = [item[@"val"] doubleValue];
-        NSString *checkMark = (maxPickupDistSetting == val) ? @"✅ " : @"⚪ ";
-        [alert addAction:[UIAlertAction actionWithTitle:[checkMark stringByAppendingString:item[@"label"]] style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-            maxPickupDistSetting = val;
-            [[NSUserDefaults standardUserDefaults] setDouble:val forKey:@"Saved_MaxDist"];
-        }]];
-    }
-
-    [alert addAction:[UIAlertAction actionWithTitle:@"Đóng" style:UIAlertActionStyleCancel handler:nil]];
-    [rootVC presentViewController:alert animated:YES completion:nil];
-}
-
 - (void)showMenuSheet {
     UIViewController *rootVC = [UIApplication sharedApplication].keyWindow.rootViewController;
     NSString *statsMsg = [NSString stringWithFormat:@"Đã quét: %lu lượt  |  Bắt được: %lu đơn mới", 
@@ -430,55 +364,32 @@ static void startChainedEngine(void) {
     }]];
 
     // 2. Từng module
-    NSString *fTitle = [NSString stringWithFormat:@"%@ Đơn Đồ ăn (Food)", isFoodEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
+    NSString *fTitle = [NSString stringWithFormat:@"%@ Đơn Đồ ăn", isFoodEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
     [sheet addAction:[UIAlertAction actionWithTitle:fTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         isFoodEnabled = !isFoodEnabled;
         [[NSUserDefaults standardUserDefaults] setBool:isFoodEnabled forKey:@"Saved_Food"];
     }]];
 
-    NSString *dTitle = [NSString stringWithFormat:@"%@ Đơn Giao hàng (Delivery)", isDeliveryEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
+    NSString *dTitle = [NSString stringWithFormat:@"%@ Đơn Giao hàng", isDeliveryEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
     [sheet addAction:[UIAlertAction actionWithTitle:dTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         isDeliveryEnabled = !isDeliveryEnabled;
         [[NSUserDefaults standardUserDefaults] setBool:isDeliveryEnabled forKey:@"Saved_Delivery"];
     }]];
 
-    NSString *rTitle = [NSString stringWithFormat:@"%@ Cuốc Xe ôm (Ride)", isRideEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
+    NSString *rTitle = [NSString stringWithFormat:@"%@ Cuốc Xe ôm", isRideEnabled ? @"[BẬT] 🟢" : @"[TẮT] 🔴"];
     [sheet addAction:[UIAlertAction actionWithTitle:rTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         isRideEnabled = !isRideEnabled;
         [[NSUserDefaults standardUserDefaults] setBool:isRideEnabled forKey:@"Saved_Ride"];
     }]];
 
-    // 3. Auto-Accept & Lọc
-    NSString *autoTitle = [NSString stringWithFormat:@"%@ Tự Động Nhận Đơn (Auto-Accept)", isAutoAcceptEnabled ? @"[BẬT] 🎯" : @"[TẮT] ⏸️"];
-    [sheet addAction:[UIAlertAction actionWithTitle:autoTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        isAutoAcceptEnabled = !isAutoAcceptEnabled;
-        [[NSUserDefaults standardUserDefaults] setBool:isAutoAcceptEnabled forKey:@"Saved_AutoAccept"];
-    }]];
-
-    NSString *priceTitle = [NSString stringWithFormat:@"💰 Lọc giá tối thiểu: [%.0f đ] ❯", minOrderPriceSetting];
-    [sheet addAction:[UIAlertAction actionWithTitle:priceTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self openMinPricePicker:rootVC];
-    }]];
-
-    NSString *distTitle = [NSString stringWithFormat:@"📍 Lọc khoảng cách: [≤ %.1f km] ❯", maxPickupDistSetting];
-    [sheet addAction:[UIAlertAction actionWithTitle:distTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        [self openMaxDistancePicker:rootVC];
-    }]];
-
-    // 4. Chuông & Rung
-    NSString *sndTitle = [NSString stringWithFormat:@"%@ Chuông & Rung báo đơn", isSoundHapticEnabled ? @"[BẬT] 🔔" : @"[TẮT] 🔕"];
+    // 3. Chuông & Rung
+    NSString *sndTitle = [NSString stringWithFormat:@"%@ Chuông & Rung", isSoundHapticEnabled ? @"[BẬT] 🔔" : @"[TẮT] 🔕"];
     [sheet addAction:[UIAlertAction actionWithTitle:sndTitle style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         isSoundHapticEnabled = !isSoundHapticEnabled;
         [[NSUserDefaults standardUserDefaults] setBool:isSoundHapticEnabled forKey:@"Saved_Sound"];
     }]];
 
-    // 5. Tiện ích
-    [sheet addAction:[UIAlertAction actionWithTitle:@"🔄 Reset bộ đếm thống kê" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
-        totalScannedCount = 0;
-        newOrdersFound = 0;
-        [self updateLiveStatsUI];
-    }]];
-
+    // 4. Xả RAM & Ẩn nút
     [sheet addAction:[UIAlertAction actionWithTitle:@"🧹 Xả RAM & Cache" style:UIAlertActionStyleDefault handler:^(UIAlertAction * _Nonnull action) {
         [[NSURLCache sharedURLCache] removeAllCachedResponses];
     }]];
@@ -493,55 +404,38 @@ static void startChainedEngine(void) {
 
 @end
 
-// MARK: - 7. CHỐNG PHÁT HIỆN DYLIB (ANTI-DETECTION)
-static const char *(*orig_dyld_get_image_name)(uint32_t image_index);
-static const char *hooked_dyld_get_image_name(uint32_t image_index) {
-    const char *name = orig_dyld_get_image_name(image_index);
-    if (name != NULL) {
-        if (strstr(name, "dylib") || strstr(name, "Substrate") || strstr(name, "TweakInject") || strstr(name, "Shadow")) {
-            return "/System/Library/Frameworks/UIKit.framework/UIKit";
-        }
-    }
-    return name;
-}
+// MARK: - 7. KHỞI TẠO AN TOÀN TRÁNH CRASH TRÊN NON-JAILBREAK
+static void onAppDidBecomeActive(CFNotificationCenterRef center, void *observer, CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
+            NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
+            if ([defs objectForKey:@"Saved_Food"])       isFoodEnabled        = [defs boolForKey:@"Saved_Food"];
+            if ([defs objectForKey:@"Saved_Delivery"])   isDeliveryEnabled    = [defs boolForKey:@"Saved_Delivery"];
+            if ([defs objectForKey:@"Saved_Ride"])       isRideEnabled        = [defs boolForKey:@"Saved_Ride"];
+            if ([defs objectForKey:@"Saved_Sound"])      isSoundHapticEnabled = [defs boolForKey:@"Saved_Sound"];
+            if ([defs objectForKey:@"Saved_Master"])     isMasterLoopRunning  = [defs boolForKey:@"Saved_Master"];
 
-static void applyAntiDetection(void) {
-    MSHookFunction((void *)_dyld_get_image_name, (void *)hooked_dyld_get_image_name, (void **)&orig_dyld_get_image_name);
-}
-
-// MARK: - 8. CỬ CHỈ BÍ MẬT & CONSTRUCTOR
-%hook UIWindow
-- (void)makeKeyAndVisible {
-    %orig;
-    if (self.windowLevel == UIWindowLevelNormal) {
-        UITapGestureRecognizer *secretGesture = [[UITapGestureRecognizer alloc] initWithTarget:[MasterControlMenu shared] action:@selector(toggleMenuVisibility)];
-        secretGesture.numberOfTouchesRequired = 3;
-        secretGesture.numberOfTapsRequired = 2;
-        [self addGestureRecognizer:secretGesture];
-    }
-}
-%end
-
-__attribute__((constructor)) static void initTweak(void) {
-    applyAntiDetection();
-    setupCustomAudioPlayer();
-
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(2.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
-        NSUserDefaults *defs = [NSUserDefaults standardUserDefaults];
-        if ([defs objectForKey:@"Saved_Food"])       isFoodEnabled        = [defs boolForKey:@"Saved_Food"];
-        if ([defs objectForKey:@"Saved_Delivery"])   isDeliveryEnabled    = [defs boolForKey:@"Saved_Delivery"];
-        if ([defs objectForKey:@"Saved_Ride"])       isRideEnabled        = [defs boolForKey:@"Saved_Ride"];
-        if ([defs objectForKey:@"Saved_Sound"])      isSoundHapticEnabled = [defs boolForKey:@"Saved_Sound"];
-        if ([defs objectForKey:@"Saved_Master"])     isMasterLoopRunning  = [defs boolForKey:@"Saved_Master"];
-        if ([defs objectForKey:@"Saved_AutoAccept"]) isAutoAcceptEnabled  = [defs boolForKey:@"Saved_AutoAccept"];
-        if ([defs objectForKey:@"Saved_MinPrice"])   minOrderPriceSetting = [defs doubleForKey:@"Saved_MinPrice"];
-        if ([defs objectForKey:@"Saved_MaxDist"])    maxPickupDistSetting = [defs doubleForKey:@"Saved_MaxDist"];
-
-        [MasterControlMenu shared];
-        if (isMasterLoopRunning) {
-            startChainedEngine();
-        }
+            [MasterControlMenu shared];
+            if (isMasterLoopRunning) {
+                startChainedEngine();
+            }
+        });
     });
+}
+
+__attribute__((constructor)) static void initSafeTweak(void) {
+    setupCustomAudioPlayer();
+    
+    // Lắng nghe khi App chuyển sang trạng thái Active hoàn toàn mới kích hoạt Menu
+    CFNotificationCenterAddObserver(
+        CFNotificationCenterGetLocalCenter(),
+        NULL,
+        &onAppDidBecomeActive,
+        (CFStringRef)UIApplicationDidBecomeActiveNotification,
+        NULL,
+        CFNotificationSuspensionBehaviorDeliverImmediately
+    );
 }
 
 #pragma clang diagnostic pop
