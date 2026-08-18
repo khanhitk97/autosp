@@ -3,22 +3,26 @@ name: Build iOS Dylib
 on:
   push:
     branches: [ main, master ]
-  workflow_dispatch: # Cho phép bấm nút "Run workflow" thủ công trên web
+  workflow_dispatch:
 
 jobs:
   build:
-    runs-on: macos-14 # Chạy trên máy ảo macOS của GitHub
+    runs-on: macos-14
 
     steps:
       - name: Checkout mã nguồn
         uses: actions/checkout@v4
 
-      - name: Cài đặt Theos & Toolchain iOS
+      - name: Cài đặt ldid & Theos Toolchain
         run: |
+          # Cài đặt ldid để ký dylib
+          brew install ldid
+          
+          # Cài đặt Theos
           git clone --recursive https://github.com/theos/theos.git $HOME/theos
           echo "THEOS=$HOME/theos" >> $GITHUB_ENV
           
-          # Tải iOS SDK 16.5 / 14.5 cho Theos
+          # Tải iOS SDK
           curl -LO https://github.com/theos/sdks/archive/master.zip
           unzip -q master.zip
           mv sdks-master/*.sdk $HOME/theos/sdks/
@@ -27,10 +31,9 @@ jobs:
       - name: Biên dịch Dylib (Compile)
         run: |
           export THEOS=$HOME/theos
-          # Build package Theos
           make package FINALPACKAGE=1
           
-          # Trích xuất và gom file .dylib vào thư mục output
+          # Gom file .dylib và .deb vào thư mục output
           mkdir -p output
           find .theos/obj -name "*.dylib" -exec cp {} output/ \;
 
